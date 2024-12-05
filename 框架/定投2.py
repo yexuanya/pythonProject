@@ -4,26 +4,28 @@ from pyecharts.charts import Line
 from pyecharts import options as opts
 
 
-def adjusted_dollar_cost_averaging_strategy(df, interval_days=30, base_investment_amount=100, adjustment_threshold=0.5):
+def buy_low_sell_high_strategy(
+        df, interval_days=30, base_investment_amount=100, adjustment_threshold=0.01, sell_threshold=0.01
+):
     """
-    定投策略：每隔一定时间间隔，定期投资基础金额，并根据市值与均价差异调整投资金额。
-    定投添加波动系数，超过均价降低投入，低于均价加大投入
+    策略：价格下跌买入，价格上涨卖出。
     :param df: 包含历史数据的 DataFrame，至少包含 'close' 和 'timestamp' 列
-    :param interval_days: 定投的时间间隔（天数）
-    :param base_investment_amount: 基础定投金额
-    :param adjustment_threshold: 调整阈值（基于均价和市值差异的百分比）
+    :param interval_days: 操作的时间间隔（天数）
+    :param base_investment_amount: 基础金额（用于买入）
+    :param adjustment_threshold: 调整阈值（基于均价和市值差异的百分比，用于买入）
+    :param sell_threshold: 卖出阈值（基于均价和市值差异的百分比，用于卖出）
     :return: 带有策略计算结果的 DataFrame
     """
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     df['cumulative_investment'] = 0.0  # 累计投资金额
-    df['cumulative_shares'] = 0.0      # 累计购买的份额
-    df['portfolio_value'] = 0.0        # 投资组合总价值
-    df['7_day_avg'] = df['close'].rolling(window=720).mean()  # 计算7天均价
+    df['cumulative_shares'] = 0.0  # 累计购买的份额
+    df['portfolio_value'] = 0.0  # 投资组合总价值
+    df['7_day_avg'] = df['close'].rolling(window=24*7).mean()  # 计算7天均价，1天=24
 
     # 初始累计值
     cumulative_investment = 0.0
     cumulative_shares = 0.0
-    last_investment_date = df['timestamp'].iloc[0] - pd.Timedelta(days=interval_days)   #记录上次投资日期
+    last_trade_date = df['timestamp'].iloc[0] - pd.Timedelta(days=interval_days)
 
     for i, row in df.iterrows():
         current_date = row['timestamp']
@@ -34,22 +36,29 @@ def adjusted_dollar_cost_averaging_strategy(df, interval_days=30, base_investmen
         if pd.isna(avg_7_day_price):
             continue
 
-        # 每隔 interval_days 投资一次
-        if (current_date - last_investment_date).days >= interval_days:
-            # 计算投资调整比例
+        # 每隔 interval_days 进行操作
+        if (current_date - last_trade_date).days >= interval_days:
+            # 计算与均价的偏差
             price_difference_ratio = (avg_7_day_price - current_price) / current_price
 
-            # 限制调整比例在 [-adjustment_threshold, adjustment_threshold] 范围内
-            adjustment_ratio = max(min(price_difference_ratio, adjustment_threshold), -adjustment_threshold)
+            # 买入条件：价格低于均价（下跌）
+            if price_difference_ratio < 0 and abs(price_difference_ratio) >= adjustment_threshold:
+                # 调整后的买入金额
+                adjusted_investment = base_investment_amount * (1 + price_difference_ratio * 10)
+                shares_bought = adjusted_investment / current_price
+                cumulative_investment += adjusted_investment
+                cumulative_shares += shares_bought
+                last_trade_date = current_date  # 更新上次交易日期
 
-            # 调整后的投资金额
-            adjusted_investment = base_investment_amount * (1 + adjustment_ratio*10)
-
-            # 购买份额
-            shares_bought = adjusted_investment / current_price
-            cumulative_investment += adjusted_investment
-            cumulative_shares += shares_bought
-            last_investment_date = current_date
+            # 卖出条件：价格高于均价（上涨）
+            elif price_difference_ratio > 0 and abs(price_difference_ratio) >= sell_threshold:
+                # 计算卖出的份额（假设卖出10%的持仓）
+                shares_sold = cumulative_shares * 0.1
+                sell_amount = shares_sold * current_price
+                cumulative_shares -= shares_sold
+                # 不直接减少投资金额，避免为负，而是更新市值
+                cumulative_investment = cumulative_shares * current_price
+                last_trade_date = current_date  # 更新上次交易日期
 
         # 更新 DataFrame 中的累计值
         df.at[i, 'cumulative_investment'] = cumulative_investment
@@ -58,8 +67,10 @@ def adjusted_dollar_cost_averaging_strategy(df, interval_days=30, base_investmen
         # 更新投资组合总价值
         df.at[i, 'portfolio_value'] = cumulative_shares * current_price
 
-    return df
+    # 计算净利润：市值 - 投入金额
+    df['net_profit'] = df['portfolio_value'] - df['cumulative_investment']
 
+    return df
 
 
 def backtest_dca(df, interval_days=30, investment_amount=100):
@@ -69,11 +80,8 @@ def backtest_dca(df, interval_days=30, investment_amount=100):
     :param interval_days: 定投的时间间隔（天数）
     :param investment_amount: 每次投资的固定金额
     :return: 包含回测结果的 DataFrame
-    :adjusted_dollar_cost_averaging_strategy:根据波动调整投入比例
-    :buy_low_sell_high_strategy:：根据波动买入卖出
     """
-    df = adjusted_dollar_cost_averaging_strategy(df, interval_days, investment_amount)
-
+    df = buy_low_sell_high_strategy(df, interval_days, investment_amount)
     df['returns'] = df['portfolio_value'].pct_change()
     return df
 
@@ -110,6 +118,11 @@ def line_charts_dca(df):
         y_axis=df['cumulative_investment'].tolist(),
         label_opts=opts.LabelOpts(is_show=False),
     )
+    c.add_yaxis(
+        series_name="净利润",
+        y_axis=df['net_profit'].tolist(),
+        label_opts=opts.LabelOpts(is_show=False),
+    )
 
     # 数据项设置
     c.set_global_opts(
@@ -131,24 +144,13 @@ def line_charts_dca(df):
 
 
 if __name__ == "__main__":
-
     # 加载数据
-    '''xxct数据'''
     filename = r'D:\code\1\pythonProject\数据\ccxt\swap\BTC-USDT_20-24_1h.csv'  # 替换成你的数据文件
     df = pd.read_csv(filename)
 
-    '''xbx数据'''
-    # filename = r'D:\code\1\pythonProject\数据\xbx\swap\BTC-USDT.csv'  # 替换成你的数据文件
-    # df = pd.read_csv(filename, skiprows=1,encoding='GB2312')
-    # df['timestamp'] = df['candle_begin_time']
-
-
-    # df['timestamp_copy'] = df['timestamp']  # 将时间戳列复制一份
     df['timestamp_copy'] = pd.to_datetime(df['timestamp'])
     df.set_index('timestamp_copy', inplace=True)  # 使用复制的时间戳列作为索引
 
-
-    '''单次运行'''
     # 回测定投策略
     df = backtest_dca(df, interval_days=24, investment_amount=1000)
 

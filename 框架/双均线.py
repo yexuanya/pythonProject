@@ -88,11 +88,19 @@ def line_charts(df):
         label_opts=opts.LabelOpts(is_show=False),
     )
     c.set_global_opts(
-        title_opts=opts.TitleOpts(title='BTC/USDT 收盘价趋势图', pos_left="center"),
-        legend_opts=opts.LegendOpts(is_show=True),
+        title_opts=opts.TitleOpts(
+            title='BTC/USDT 收盘价趋势图',
+            pos_left="center",
+            pos_top="5%",  # 设置标题距离顶部5%
+            title_textstyle_opts=opts.TextStyleOpts(font_size=18),  # 调整标题字体大小
+        ),
+        legend_opts=opts.LegendOpts(
+            is_show=True,
+            pos_top="10%"  # 设置图例距离顶部的距离，避免与标题重叠
+        ),
         tooltip_opts=opts.TooltipOpts(trigger='axis', axis_pointer_type='cross'),
         toolbox_opts=opts.ToolboxOpts(is_show=True),
-        datazoom_opts=[opts.DataZoomOpts()],
+        datazoom_opts=[opts.DataZoomOpts()],  # 支持缩放
         xaxis_opts=opts.AxisOpts(name="时间", type_="category"),
         yaxis_opts=opts.AxisOpts(name="价格", type_="value"),
     )
@@ -101,8 +109,15 @@ def line_charts(df):
 
 if __name__ == "__main__":
     # 加载数据
-    filename = r'../btcusdt_data.csv'  # 替换成你的数据文件
-    df = pd.read_csv(filename)
+    '''xxct数据'''
+    # filename = r'D:\code\1\pythonProject\数据\ccxt\swap\BTC-USDT_20-24_1h.csv'  # 替换成你的数据文件
+    # df = pd.read_csv(filename)
+
+    '''xbx数据'''
+    filename = r'D:\code\1\pythonProject\数据\xbx\swap\BTC-USDT.csv'  # 替换成你的数据文件
+    df = pd.read_csv(filename, skiprows=1,encoding='GB2312')
+    df['timestamp'] = df['candle_begin_time']
+
 
     # df['timestamp_copy'] = df['timestamp']  # 将时间戳列复制一份
     df['timestamp_copy'] = pd.to_datetime(df['timestamp'])
@@ -111,15 +126,16 @@ if __name__ == "__main__":
 
     '''单次运行'''
     # 使用默认参数单次回测并绘图
-    short_window = 66  # 默认短期窗口
-    long_window = 74   # 默认长期窗口
-    df = moving_average_crossover_strategy(df, short_window=short_window, long_window=long_window)
-    df = backtest_strategy(df)
-    chart = line_charts(df)
-    chart.render(path='BTC_USDT_close_price_trend.html')
-    print("单次回测完成，图表已保存为 BTC_USDT_close_price_trend.html")
+    #66/74最优
+    # short_window = 66  # 默认短期窗口
+    # long_window = 74   # 默认长期窗口
+    # df = moving_average_crossover_strategy(df, short_window=short_window, long_window=long_window)
+    # df = backtest_strategy(df)
+    # chart = line_charts(df)
+    # chart.render(path='BTC_USDT_close_price_trend.html')
+    # print("单次回测完成，图表已保存为 BTC_USDT_close_price_trend.html")
 
 
     '''遍历最优解'''
-    # optimal_params = optimize_parameters(df, max_short_window=100, max_long_window=100)
-    # print("最优参数已保存至 backtest_results2.csv")
+    optimal_params = optimize_parameters(df, max_short_window=100, max_long_window=100)
+    print("最优参数已保存至 backtest_results2.csv")
