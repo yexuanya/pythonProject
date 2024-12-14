@@ -6,7 +6,6 @@ import os
 import numpy as np
 from scipy.signal import find_peaks
 
-
 def fetch_binance_ohlcv(exchange, pair: str, timeframe: str = '15m', limit: int = 1000, output_folder: str = "data"):
     """
     获取指定交易对的历史K线数据，并保存为CSV文件。
@@ -24,6 +23,11 @@ def fetch_binance_ohlcv(exchange, pair: str, timeframe: str = '15m', limit: int 
     try:
         # 获取K线数据
         ohlcv = exchange.fetch_ohlcv(pair, timeframe=timeframe, limit=limit)
+
+        # 如果数据量不足，直接跳过
+        if len(ohlcv) < limit:
+            print(f"{pair} 数据量不足，跳过。")
+            return None
 
         # 转换为Pandas DataFrame
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -55,6 +59,9 @@ def fetch_binance_ohlcv(exchange, pair: str, timeframe: str = '15m', limit: int 
         last_close = df['close'].iloc[-1]
         final_price_change = ((last_close - first_close) / first_close) * 100
 
+        # 检查价格是否低于10
+        below_10 = df['close'].mean() < 10
+
         return {
             'Coin': pair,
             'Max Increase (%)': max_increase,
@@ -62,7 +69,8 @@ def fetch_binance_ohlcv(exchange, pair: str, timeframe: str = '15m', limit: int 
             'Final Change (%)': final_price_change,
             'Average Change (%)': average_change,
             'Volatility (%)': volatility,
-            'Dominant Period': dominant_period
+            'Dominant Period': dominant_period,
+            'Below 10': below_10
         }
 
     except ccxt.BaseError as e:
@@ -102,10 +110,10 @@ def calculate_dominant_period(series: pd.Series) -> float:
     # 计算一阶差分
     diff = series.diff().dropna()
 
-    # 查找峰值a
+    # 查找峰值
     peaks, _ = find_peaks(diff)
 
-    if len(peaks) < 28:
+    if len(peaks) < 2:
         return None  # 如果峰值不足两个，无法计算周期
 
     # 计算相邻峰值之间的平均距离
@@ -138,26 +146,36 @@ def main():
 
     print(f"发现{len(bi_list)}个类型为{type1}的交易对。")
 
+    # 检查是否需要重新获取数据
+    if os.path.exists("summary.csv"):
+        choice = input("发现已有数据文件，是否重新获取数据？(y/n): ").strip().lower()
+    else:
+        choice = "y"
+
     results = []
 
-    # 使用进度条获取数据
-    for bi in tqdm(bi_list, desc="获取数据"):
-        result = fetch_binance_ohlcv(exchange, f'{bi}/USDT', '1h', 28*24, output_folder)
-        if result:
-            results.append(result)
+    if choice == "y":
+        # 使用进度条获取数据
+        for bi in tqdm(bi_list, desc="获取数据"):
+            result = fetch_binance_ohlcv(exchange, f'{bi}/USDT', '1h', 7*24, output_folder)
+            if result:
+                results.append(result)
 
-    # 保存结果
-    result_df = pd.DataFrame(results)
-    today = datetime.today().strftime('%m_%d')
-    output_file = os.path.join('./', f"summary_{today}.csv")
-    result_df.to_csv(output_file, index=False)
+        # 保存结果
+        result_df = pd.DataFrame(results)
+        result_df.to_csv("summary.csv", index=False)
 
-    print(f"所有结果已保存至{output_file}")
+        print("所有结果已保存至summary.csv")
+    else:
+        print("读取现有数据文件...")
+        result_df = pd.read_csv("summary.csv")
 
-    # 筛选周期性强的前10个币种
-    top_10_periodic = result_df.sort_values(by='Dominant Period', ascending=True).head(10)
-    print('周期性最强的前10个币种：')
-    print(top_10_periodic[['Coin', 'Dominant Period']])
+    # 筛选价格低于10且周期性强的前10个币种
+    filtered = result_df[result_df['Below 10'] == True]
+    top_10_periodic = filtered.sort_values(by='Dominant Period', ascending=True).head(10)
+
+    print('价格低于10且周期性最强的前10个币种：')
+    print(top_10_periodic[['Coin', 'Dominant Period', 'Below 10']])
 
 if __name__ == "__main__":
     main()
