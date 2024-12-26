@@ -84,9 +84,9 @@ def get_date_ranges_by_coin(df: pd.DataFrame) -> pd.DataFrame:
     return date_ranges
 
 
-def calculate_investment_curve(df: pd.DataFrame, coins: list, start_date: str, end_date: str, amount: float = 100) -> pd.DataFrame:
+def calculate_investment_curve_with_lump_sum(df: pd.DataFrame, coins: list, start_date: str, end_date: str, amount: float = 100) -> pd.DataFrame:
     """
-    模拟每天 4 点定投指定币种的收益曲线
+    模拟每天 4 点定投和一次性投入的收益曲线
 
     参数：
     df: pd.DataFrame
@@ -119,6 +119,20 @@ def calculate_investment_curve(df: pd.DataFrame, coins: list, start_date: str, e
     total_investment = {coin: 0 for coin in coins}
     total_holdings = {coin: 0 for coin in coins}
 
+    # 计算一次性投入
+    lump_sum_investment = len(daily_data) * amount * len(coins)
+    lump_sum_holdings = {coin: 0 for coin in coins}
+    first_prices = daily_data.iloc[0] if not daily_data.empty else {}
+
+    # 分配一次性本金至初始价格
+    for coin, price in first_prices.items():
+        if price > 0:
+            lump_sum_holdings[coin] = lump_sum_investment / len(coins) / price
+
+    # 用于计算涨跌幅的前一天值
+    prev_total_value = None
+    prev_lump_sum_value = None
+
     for date, prices in daily_data.items():
         daily_investment = 0
         for coin, price in prices.items():
@@ -128,9 +142,23 @@ def calculate_investment_curve(df: pd.DataFrame, coins: list, start_date: str, e
                 total_holdings[coin] += amount / price
                 daily_investment += amount
 
-        # 计算当前总市值
+        # 计算定投的当前总市值
         total_value = sum(total_holdings[coin] * prices.get(coin, 0) for coin in coins)
         total_cost = sum(total_investment.values())
+
+        # 计算一次性投入的当前总市值
+        lump_sum_value = sum(lump_sum_holdings[coin] * prices.get(coin, 0) for coin in coins)
+
+        # 计算涨跌幅（相对于前一天）
+        if prev_total_value is not None and prev_total_value > 0:
+            total_value_change = ((total_value - prev_total_value) / prev_total_value) * 100
+        else:
+            total_value_change = 0  # 如果前一天的值无效或为0，涨跌幅设置为0
+
+        if prev_lump_sum_value is not None and prev_lump_sum_value > 0:
+            lump_sum_value_change = ((lump_sum_value - prev_lump_sum_value) / prev_lump_sum_value) * 100
+        else:
+            lump_sum_value_change = 0  # 如果前一天的值无效或为0，涨跌幅设置为0
 
         # 添加记录
         investment_results.append({
@@ -138,8 +166,17 @@ def calculate_investment_curve(df: pd.DataFrame, coins: list, start_date: str, e
             '总市值': total_value,
             '总投入': total_cost,
             '收益': total_value - total_cost,
-            '收益率': ((total_value - total_cost) / total_cost * 100) if total_cost > 0 else 0
+            '涨跌幅':total_value_change,
+            '收益率': ((total_value - total_cost) / total_cost * 100) if total_cost > 0 else 0,
+            '一次性投入市值': lump_sum_value,
+            '一次性投入收益': lump_sum_value - lump_sum_investment,
+            '一次性投入涨跌幅': lump_sum_value_change,
+            '一次性收益率': ((lump_sum_value - lump_sum_investment) / lump_sum_investment * 100) if lump_sum_investment > 0 else 0
         })
+
+        # 更新前一个总市值和一次性投入市值
+        prev_total_value = total_value
+        prev_lump_sum_value = lump_sum_value
 
     # 转为 DataFrame
     investment_curve = pd.DataFrame(investment_results)
@@ -171,16 +208,15 @@ def plot_investment_curve(investment_curve: pd.DataFrame):
 
 
 # pyecharts绘制收益曲线
-def line_chart(investment_curve):
+def line_chart_with_lump_sum(investment_curve, sharpe_ratio: float):
     """
-    使用 pyecharts 绘制定投收益曲线图，包含收益率曲线。
+    使用 pyecharts 绘制定投收益曲线图，包含一次性投入的资金曲线，并在下方标注夏普率、最大回撤和最大涨幅。
 
     参数:
     investment_curve: pd.DataFrame
-        包含时间、总市值、总投入、收益和收益率的 DataFrame。
-
-    返回:
-    pyecharts Line 图对象
+        包含时间、总市值、总投入、收益、收益率、一致性投入市值的 DataFrame。
+    sharpe_ratio: float
+        计算得到的夏普率。
     """
     # 确保日期列为 datetime 类型
     if not pd.api.types.is_datetime64_any_dtype(investment_curve['日期']):
@@ -190,8 +226,16 @@ def line_chart(investment_curve):
     x = investment_curve['日期'].dt.strftime('%Y-%m-%d').tolist()  # 日期转为字符串
     total_investment = investment_curve['总投入'].tolist()
     total_value = investment_curve['总市值'].tolist()
-    profit = investment_curve['收益'].tolist()
+    lump_sum_value = investment_curve['一次性投入市值'].tolist()
     profit_rate = investment_curve['收益率'].tolist()
+    lump_sum_profit_rate = investment_curve['一次性收益率'].tolist()
+    total_value_change = investment_curve['涨跌幅'].tolist()
+    lump_sum_value_change = investment_curve['一次性投入涨跌幅'].tolist()
+
+    # 计算最大回撤和最大涨幅
+    cumulative_returns = investment_curve['总市值'] / investment_curve['总市值'].shift(1)
+    max_drawdown = (cumulative_returns.min() - 1) * 100  # 最大回撤，百分比
+    max_gain = (cumulative_returns.max() - 1) * 100  # 最大涨幅，百分比
 
     # 初始化 Line 图
     line = Line(init_opts=opts.InitOpts(width="100%", height="600px", page_title="定投收益曲线"))
@@ -202,7 +246,7 @@ def line_chart(investment_curve):
     # 添加金额相关的 Y 轴数据 (主 Y 轴)
     line.add_yaxis(series_name="总投入", y_axis=total_investment, is_smooth=True, yaxis_index=0)
     line.add_yaxis(series_name="总市值", y_axis=total_value, is_smooth=True, yaxis_index=0)
-    line.add_yaxis(series_name="收益", y_axis=profit, is_smooth=True, yaxis_index=0)
+    line.add_yaxis(series_name="一次性投入市值", y_axis=lump_sum_value, is_smooth=True, yaxis_index=0)
 
     # 添加收益率数据 (次 Y 轴)
     line.add_yaxis(
@@ -213,16 +257,42 @@ def line_chart(investment_curve):
         linestyle_opts=opts.LineStyleOpts(width=2, color="orange"),
         label_opts=opts.LabelOpts(is_show=False),
     )
+    line.add_yaxis(
+        series_name="一次性收益率 (%)",
+        y_axis=lump_sum_profit_rate,
+        is_smooth=True,
+        yaxis_index=1,
+        linestyle_opts=opts.LineStyleOpts(width=2, color="purple"),
+        label_opts=opts.LabelOpts(is_show=False),
+    )
+    line.add_yaxis(
+        series_name="涨跌幅 (%)",
+        y_axis=total_value_change,
+        is_smooth=True,
+        yaxis_index=1,
+        linestyle_opts=opts.LineStyleOpts(width=2, color="blue"),
+        label_opts=opts.LabelOpts(is_show=False),
+    )
+    line.add_yaxis(
+        series_name="一次性投入涨跌幅 (%)",
+        y_axis=lump_sum_value_change,
+        is_smooth=True,
+        yaxis_index=1,
+        linestyle_opts=opts.LineStyleOpts(width=2, color="orange"),
+        label_opts=opts.LabelOpts(is_show=False),
+    )
 
     # 设置全局选项
     line.set_global_opts(
         title_opts=opts.TitleOpts(
-            title="定投收益曲线",
-            pos_left="center",
-            pos_top="5%",
+            title="定投与一次性投入收益曲线",
+            subtitle=f"夏普率: {sharpe_ratio:.4f} | 最大回撤: {max_drawdown:.2f}% | 最大涨幅: {max_gain:.2f}%",
+            subtitle_textstyle_opts=opts.TextStyleOpts(font_size=14, color="gray"),
+            pos_left="center",      #标题居中
+            pos_top="0%",
             title_textstyle_opts=opts.TextStyleOpts(font_size=18),
         ),
-        legend_opts=opts.LegendOpts(is_show=True, pos_top="10%"),
+        legend_opts=opts.LegendOpts(is_show=True, pos_top="10%"),   # 将图例位置下移，避免与标题重叠
         tooltip_opts=opts.TooltipOpts(trigger="axis", axis_pointer_type="cross"),
         toolbox_opts=opts.ToolboxOpts(is_show=True),
         datazoom_opts=[opts.DataZoomOpts(is_show=True, type_="slider", orient="horizontal")],
@@ -254,7 +324,8 @@ def line_chart(investment_curve):
     return line
 
 
-def calculate_sharpe_ratio(investment_curve: pd.DataFrame, risk_free_rate: float = 0.02) -> float:
+
+def calculate_sharpe_ratio(investment_curve: pd.DataFrame, risk_free_rate: float = 0.04) -> float:
     """
     计算投资组合的夏普率 (Sharpe Ratio)
 
@@ -275,17 +346,16 @@ def calculate_sharpe_ratio(investment_curve: pd.DataFrame, risk_free_rate: float
     investment_curve['每日收益率'] = investment_curve['总市值'].pct_change()
 
     # 转换无风险收益率为每日收益率
-    daily_risk_free_rate = (1 + risk_free_rate) ** (1 / 365) - 1
+    Rf = risk_free_rate / 365
 
-    # 计算超额收益率
-    investment_curve['超额收益率'] = investment_curve['每日收益率'] - daily_risk_free_rate
+    # 计算数字货币的平均日回报率
+    mean_return = investment_curve['每日收益率'].mean()
 
-    # 计算平均超额收益率和标准差
-    mean_excess_return = investment_curve['超额收益率'].mean()
-    std_dev_return = investment_curve['每日收益率'].std()
+    # 计算数字货币的回报率标准差
+    std_deviation = investment_curve['每日收益率'].std()
 
-    # 计算夏普率
-    sharpe_ratio = mean_excess_return / std_dev_return if std_dev_return != 0 else float('nan')
+    # 计算夏普比率
+    sharpe_ratio = (mean_return - Rf) / std_deviation
 
     return sharpe_ratio
 
@@ -313,7 +383,7 @@ bi = ["BTC","ETH","SOL","XRP","TRX","DOGE","ADA","LINK","SUI","PEPE"]
 # print(date_ranges)
 
 # 计算收益曲线
-investment_curve = calculate_investment_curve(
+investment_curve = calculate_investment_curve_with_lump_sum(
     df=result,
     coins=bi,
     start_date='2024-01-01',
@@ -322,9 +392,11 @@ investment_curve = calculate_investment_curve(
 )
 
 
-# 绘制图表
-chart = line_chart(investment_curve)
-chart.render(path="investment_curve.html")
-
+# 计算夏普率
 sharpe_ratio = calculate_sharpe_ratio(investment_curve)
+
+# 生成图表
+chart = line_chart_with_lump_sum(investment_curve, sharpe_ratio)
+chart.render(path="investment_curve_with_lump_sum.html")
+
 print(f"夏普率为: {sharpe_ratio:.4f}")
